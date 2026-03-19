@@ -32,25 +32,24 @@ Compatible with **Claude Max subscription** — no API key required.
 
 ## How It Works
 
-```
-  🔥 EMBER pitches ──→ 🔪 RAZOR attacks ──→ ⚖️ JUDGE evaluates
-        ↑                                          │
-        │                                          │
-        └──── repeat until BRILLIANT ◄─────────────┘
-                                                   │
-                                          If BRILLIANT ↓
-                                                   │
-                                      🐍 VIPER VC review
-                                                   │
-                              ┌────────────────────┼────────────────────┐
-                              │                    │                    │
-                          INVEST 💰          CONDITIONAL ⚠️          PASS ✗
-                              │                    │                    │
-                           done               more rounds          more rounds
-                              │                    │                    │
-                              └────────────────────┴────────────────────┘
-                                                   │
-                                          📋 PITCH summary
+```mermaid
+flowchart TD
+    A["🔥 EMBER pitches"] --> B["🔪 RAZOR attacks"]
+    B --> C{"⚖️ JUDGE\nevaluates"}
+    C -->|"not BRILLIANT"| A
+    C -->|"BRILLIANT"| D["🐍 VIPER\nVC review"]
+    D -->|"INVEST 💰"| F["📋 PITCH\nsummary"]
+    D -->|"CONDITIONAL ⚠️"| E["more sparring\nrounds"]
+    D -->|"PASS ✗"| E
+    E --> A
+    E --> F
+
+    style A fill:#b8860b,stroke:#333,color:#fff
+    style B fill:#8b0000,stroke:#333,color:#fff
+    style C fill:#1a7a7a,stroke:#333,color:#fff
+    style D fill:#2d6a2d,stroke:#333,color:#fff
+    style E fill:#444,stroke:#333,color:#fff
+    style F fill:#6a1b6a,stroke:#333,color:#fff
 ```
 
 The JUDGE uses **hard gate requirements** — binary checkboxes that must ALL pass before a verdict can be awarded. For example, FUCKING BRILLIANT requires: real human voice validation, RAZOR failed to kill it, competitive moat stress-tested, 18-month plan modeled, and more. No hand-waving past the gates.
