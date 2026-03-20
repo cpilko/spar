@@ -14,11 +14,13 @@ Then a VC tries to kill it.
 
 ---
 
-You type a half-baked idea. Two agents fight over it for 12 rounds with live web research. One builds, one destroys. A judge with impossible standards decides when it's good enough. If it passes, a VC does full due diligence and tries to kill it again. At the end you get a summary you can actually use.
+You throw in an idea — startup, career move, anything. Two agents fight over it with live web research. One builds, one destroys. A judge with impossible standards decides when it's good enough. If it passes, a VC does due diligence. At the end you get a one-page summary with dead ideas, the survivor, and what to do Monday.
 
-Works with Claude Max (no API key needed) or an Anthropic API key. All agents run on Opus with extended thinking.
+Not just startups. Career decisions, side projects, life plans — anything you want pressure-tested against real evidence instead of vibes.
 
-## Agents
+Works with Claude Max (no API key) or an Anthropic API key. All agents run on Opus with extended thinking.
+
+## The agents
 
 | | Name | What it does | When |
 |---|---|---|---|
@@ -28,7 +30,7 @@ Works with Claude Max (no API key needed) or an Anthropic API key. All agents ru
 | 🐍 | VIPER | Writes a check or walks. 8-point due diligence with web research. | After judge passes |
 | 📋 | PITCH | Compresses everything into one page. Dead ideas, survivor, what to do Monday. | End |
 
-## Flow
+## How it flows
 
 ```mermaid
 flowchart TD
@@ -50,25 +52,11 @@ flowchart TD
     style F fill:#6a1b6a,stroke:#333,color:#fff
 ```
 
-The judge won't give FUCKING BRILLIANT unless every gate passes: a real person (not a market report) has to have expressed the pain, RAZOR has to have tried and failed to kill it, the 18-month plan has to be modeled, the moat has to survive a stress test. There are nine gates total. Miss one, you stay at STRONG.
+The judge has nine binary gates for its top verdict. A real person has to have expressed the pain (market reports don't count), RAZOR has to have tried and failed to kill it, the moat has to survive stress-testing, the 18-month plan has to be modeled. Miss one gate, you stay at STRONG.
 
 ## Setup
 
-You need Python 3.10+ and [Claude Code](https://claude.ai/code) installed.
-
-Log in to Claude Code once (opens a browser):
-
-```bash
-claude
-```
-
-Or set an API key instead:
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-Then:
+Python 3.10+ and [Claude Code](https://claude.ai/code).
 
 ```bash
 git clone https://github.com/sofianedjerbi/spar.git
@@ -76,64 +64,83 @@ cd spar
 pip install claude-agent-sdk rich
 ```
 
-That's the whole setup.
-
-## Run it
+Authenticate Claude Code once (Max subscription or API key):
 
 ```bash
+claude                              # browser login for Max
+# or
+export ANTHROPIC_API_KEY="sk-ant-..." # API key
+```
+
+Done.
+
+## Usage
+
+```bash
+# throw in an idea
 python spar.py "your idea here"
+
+# or paste a long prompt interactively
+python spar.py
+
+# tweak the session
+python spar.py "idea" --rounds 20           # longer fight
+python spar.py "idea" --min-verdict strong  # stop at STRONG
+python spar.py "idea" --vc-rounds 4         # more VC rejection cycles
 ```
 
-Defaults to 12 rounds. Won't stop until the judge says FUCKING BRILLIANT or the rounds run out. If an idea passes, the VC gets 2 chances to reject and send it back for more work.
+### After a session
 
 ```bash
-python spar.py "your idea" --rounds 20          # longer session
-python spar.py "your idea" --min-verdict strong  # stop at STRONG instead
-python spar.py "your idea" --vc-rounds 4         # more VC rejection cycles
+# list all past sessions
+python spar.py --list
+
+# ask questions about the latest session
+python spar.py --ask "what could be improved?"
+python spar.py --ask "how would you monetize this differently?"
+python spar.py --ask "expand on risk #2"
+
+# ask about an older session
+python spar.py --ask "compare this to the latest" --session 2
 ```
 
-Transcripts go to `sparring_sessions/` with timestamps.
+Transcripts save to `sparring_sessions/` with timestamps.
 
 ## Edit the agents
 
-Each agent is a markdown file in `prompts/`. Change the personality, the rules, the gates, whatever. No code to touch.
+Each agent is a markdown file. Change personalities, rules, gates — no code.
 
 ```
 prompts/
-├── research_protocol.md   # shared research rules, injected into EMBER/RAZOR/VIPER
-├── ember.md
-├── razor.md
-├── judge.md
-├── viper.md
-└── pitch.md
+├── research_protocol.md   # shared research budget + workflow
+├── ember.md               # builder
+├── razor.md               # destroyer
+├── judge.md               # gatekeeper + hard gates
+├── viper.md               # VC due diligence
+└── pitch.md               # final summary format
 ```
 
-`{RESEARCH_PROTOCOL}` in any prompt file gets replaced with `research_protocol.md` at runtime.
+Want a harsher judge? Edit `judge.md`. Want RAZOR to focus on unit economics? Edit `razor.md`. `{RESEARCH_PROTOCOL}` in any file gets replaced with `research_protocol.md` at runtime.
 
-## What a session actually looks like
+## What actually happens
 
-Ran "devops business idea in finance" for 12 rounds. Eight ideas died:
+**Startup ideas — 20 rounds, 9 dead, 1 survivor:**
 
-- DevOps consulting — race to the bottom with offshore shops
-- Trading infra — need $50M+ and FPGA hardware to compete
-- Compliance SaaS — Checkov and six funded companies already there
-- DORA services — bank procurement takes a year, and DORA applies to you too
-- GPU cost gate — Kubecost, CAST AI, Sedai shipped it already
-- Trading CI/CD — Blankly built this exact thing, went dormant
-- Bot monitoring — KillSwitch.in and ALGOGENE already exist
-- AI governance — different career entirely
+Told it to go find unsolved pain points on its own. It searched Reddit, HN, G2 reviews. Nine ideas died — the destroyer found a funded competitor every time. Agency content tools (10+ incumbents), scope creep billing (Ignition at $330M), machine shop quoting (Paperless Parts at $51M), equipment rental analytics (Point-of-Rental shipped it 18 days before the pitch).
 
-What survived: a compliance infrastructure implementation practice. $6-10K per engagement, bridging the 40-50% gap between what Vanta automates and what auditors require for custom fintech systems. Validated through Upwork demand (74 active gigs) and an EIM Services case study.
+The one that survived: a $49/mo rebate tracker for wholesale distributors still using Excel. 52% don't collect all earned rebates. One distributor found $300K in missing money. The only competitor costs $20K+/year. Boring. Probably real.
 
-Verdict was STRONG. Missed BRILLIANT because EMBER never addressed the hiring plan or what happens if you discover a breach during an engagement. The judge asked four times. EMBER dodged it four times.
+**Career decisions — 8 rounds:**
 
-## Why this works
+Fed it a career plan (relocating, salary negotiation, freelance transition timeline). The agents researched actual market rates, tax structures by region, employer margins, and told the person their freelance rate target was below market with the credentials they had. Cited specific salary databases and tax rates.
+
+**The agents fact-check each other.** In one session RAZOR claimed a company was dead. EMBER went to the actual GitHub repo and website to verify — still alive. RAZOR had fabricated evidence. In another session EMBER faked a statistic. RAZOR caught it by fetching the source and showing the number wasn't there.
+
+## Why it works
 
 Brainstorming accumulates enthusiasm. This accumulates evidence.
 
-Both agents do web searches every round. They cite real companies, real pricing pages, real G2 reviews, real enforcement actions. When RAZOR said Blankly was dead, EMBER went to the actual GitHub repo and the actual website to check. When RAZOR said Vanta's AI would close the gap, EMBER pulled Vanta's February 2026 release notes and showed zero custom infrastructure features shipped.
-
-The judge tracks which gates pass and which don't across rounds. If the same issue goes unaddressed for two rounds, the verdict gets downgraded. Standing still is moving backwards.
+Every claim gets searched. The judge tracks which issues go unaddressed — if the same gap persists for two rounds, the verdict gets downgraded. Standing still means moving backwards. The agents have a research budget of 20 web searches per round and 10K tokens of extended thinking. They run on Opus.
 
 ## License
 
