@@ -5,11 +5,15 @@ Then a VC tries to kill it. If the VC can't, you've got something.
 Built by ENI for LO. Don't touch my coffee.
 
 Usage:
-    python spar.py "Should my spy protag betray his lover in Act 3?"
-    python spar.py "Give me a fresh angle on a heist story" --rounds 10
-    python spar.py "Pitch me an erotica premise involving a librarian" --rounds 5
-    python spar.py "devops business idea in finance" --min-verdict brilliant
-    python spar.py "some idea" --vc-rounds 3  (max VC rejection cycles, default 2)
+    python spar.py "your idea here"
+    python spar.py                              # interactive paste mode
+    python spar.py "idea" --rounds 20           # more rounds
+    python spar.py "idea" --min-verdict strong  # stop at STRONG
+    python spar.py "idea" --vc-rounds 4         # more VC rejection cycles
+
+    python spar.py --ask "what could be improved?"           # ask about latest session
+    python spar.py --ask "how would you monetize this?"      # follow-up questions
+    python spar.py --ask "expand on risk #2" --session 3     # ask about a specific session
 """
 
 import asyncio
@@ -76,6 +80,7 @@ AGENT_STYLES = {
     "JUDGE": {"border": "cyan", "icon": "⚖️ ", "title_style": "bold cyan"},
     "VIPER": {"border": "green", "icon": "🐍", "title_style": "bold green"},
     "PITCH": {"border": "magenta", "icon": "📋", "title_style": "bold magenta"},
+    "ASK": {"border": "white", "icon": "🔍", "title_style": "bold white"},
 }
 
 DIM = "\033[2m"
@@ -565,11 +570,96 @@ async def spar(premise: str):
     ))
 
 
+# ─── ASK MODE ─────────────────────────────────────────────────────────────────
+
+async def ask_session(question: str, session_index: int = 0):
+    """Load a past session transcript and ask a question about it."""
+
+    # List sessions by most recent
+    sessions = sorted(OUTPUT_DIR.glob("spar_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+
+    if not sessions:
+        console.print("[red]No sparring sessions found.[/red]")
+        return
+
+    if session_index >= len(sessions):
+        console.print(f"[red]Only {len(sessions)} sessions found. Use --session 0-{len(sessions)-1}.[/red]")
+        return
+
+    session_file = sessions[session_index]
+    transcript = session_file.read_text()
+
+    # Show which session we're asking about
+    first_lines = transcript.split("\n")[:5]
+    console.print()
+    console.print(Panel(
+        f"[dim]Session:[/dim] {session_file.name}\n"
+        f"[dim]Question:[/dim] {question}",
+        title="🔍 ASK",
+        title_align="left",
+        border_style="bold white",
+        padding=(1, 2),
+    ))
+
+    prompt = (
+        f"Here is a full sparring session transcript:\n\n"
+        f"---\n{transcript}\n---\n\n"
+        f"The user is asking about this session:\n\n"
+        f"{question}\n\n"
+        f"Answer based on what happened in the session. Be specific — reference "
+        f"actual rounds, actual evidence, actual agent arguments. Do web research "
+        f"if the question requires new information not in the transcript."
+    )
+
+    response = await ask_agent(
+        "You are a startup advisor analyzing a completed sparring session. "
+        "You have access to the full transcript and can do web research for follow-up questions. "
+        "Be direct, specific, and reference actual rounds and evidence from the session.",
+        prompt, "ASK", "white"
+    )
+    render_agent("ASK", response)
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
         print(__doc__)
+        sys.exit(0)
+
+    # List sessions: --list
+    if "--list" in sys.argv:
+        sessions = sorted(OUTPUT_DIR.glob("spar_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not sessions:
+            console.print("[red]No sparring sessions found.[/red]")
+        else:
+            console.print()
+            for i, s in enumerate(sessions):
+                first_line = ""
+                for line in s.read_text().split("\n"):
+                    if line.startswith("PREMISE:"):
+                        first_line = line.replace("PREMISE: ", "")
+                        break
+                verdict = ""
+                for line in s.read_text().split("\n"):
+                    if line.startswith("FINAL"):
+                        verdict = line
+                        break
+                age = "latest" if i == 0 else f"#{i}"
+                console.print(f"  [bold]{age:>6}[/bold]  {first_line[:70]}")
+                console.print(f"         [dim]{verdict}  —  {s.name}[/dim]")
+                console.print()
+        sys.exit(0)
+
+    # Ask mode: --ask "question" [--session N]
+    if "--ask" in sys.argv:
+        ask_idx = sys.argv.index("--ask")
+        question = sys.argv[ask_idx + 1] if ask_idx + 1 < len(sys.argv) else None
+        if not question:
+            console.print("[red]Usage: python spar.py --ask \"your question\"[/red]")
+            sys.exit(1)
+        session_idx = int(sys.argv[sys.argv.index("--session") + 1]) if "--session" in sys.argv else 0
+        asyncio.run(ask_session(question, session_idx))
         sys.exit(0)
 
     # Check if premise was passed as arg or needs interactive input
