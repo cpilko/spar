@@ -465,14 +465,11 @@ async def spar(premise: str):
         razor_history="", ember_history="", judge_feedback=""
     )
 
-    threshold_met = (
-        (MIN_VERDICT == "strong" and verdict in ("STRONG", "FUCKING BRILLIANT")) or
-        (MIN_VERDICT in ("brilliant", "fucking brilliant") and verdict == "FUCKING BRILLIANT")
-    )
+    # VC runs if idea reached STRONG or better, regardless of min-verdict threshold
+    vc_eligible = verdict in ("STRONG", "FUCKING BRILLIANT")
 
-    elapsed = time.time() - start_time
-
-    if not threshold_met:
+    if not vc_eligible:
+        elapsed = time.time() - start_time
         await run_final_pitch(premise, transcript)
 
         transcript.append(f"\n{'='*70}")
