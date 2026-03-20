@@ -216,12 +216,32 @@ async def ask_agent(system_prompt: str, prompt: str, label: str, color: str) -> 
 
 async def run_sparring(premise: str, transcript: list, start_round: int,
                        num_rounds: int, razor_history: str, ember_history: str,
-                       judge_feedback: str, vc_rejection: str = "") -> tuple:
+                       judge_feedback: str, vc_rejection: str = "",
+                       use_scout: bool = False, original_premise: str = "") -> tuple:
     """Run sparring rounds. Returns (verdict, razor_history, ember_history, judge_feedback, final_round)."""
     verdict = "WEAK"
     vc_injection_done = False
 
     for round_num in range(start_round, start_round + num_rounds):
+        # ── SCOUT every 3 rounds (if enabled) ──
+        if use_scout and round_num > 1 and (round_num - 1) % 3 == 0:
+            scout_premise = original_premise or premise
+            convo_summary = "\n\n".join(transcript[-20:])  # last ~20 entries for context
+            scout_prompt = (
+                f"The sparring session is at round {round_num}. Here's what happened so far "
+                f"(recent context):\n\n---\n{convo_summary}\n---\n\n"
+                f"The user's original constraints:\n{scout_premise}\n\n"
+                f"Previous ideas may have been killed. Search for NEW pain points the agents "
+                f"haven't explored yet. Avoid anything already tried in this session. "
+                f"Find fresh territory."
+            )
+            console.print()
+            console.rule(f"[bold blue]SCOUT RESCAN (Round {round_num})[/bold blue]", style="bold blue")
+            console.print()
+            scout_response = await ask_agent(SCOUT, scout_prompt, "SCOUT", "blue")
+            render_agent("SCOUT", scout_response)
+            transcript.append(f"SCOUT (Round {round_num}):\n{scout_response}\n")
+
         console.print()
         console.rule(f"[bold]Round {round_num}[/bold]", style="dim")
         console.print()
@@ -487,16 +507,17 @@ async def spar(premise: str, use_scout: bool = False):
     ))
 
     # ─── Phase 0: Scout (optional) ───
+    original_premise = premise
     if use_scout:
         scout_output = await run_scout(premise, transcript)
-        # Scout's selected premise becomes EMBER's starting point
         premise = f"SCOUT found this pain point. The user's original constraints were:\n{premise}\n\nSCOUT's research and selected premise:\n{scout_output}\n\nBuild on SCOUT's finding. Verify it, sharpen it, and pitch it."
 
     # ─── Phase 1: Initial sparring ───
     verdict, razor_h, ember_h, judge_fb, last_round = await run_sparring(
         premise, transcript,
         start_round=1, num_rounds=ROUNDS,
-        razor_history="", ember_history="", judge_feedback=""
+        razor_history="", ember_history="", judge_feedback="",
+        use_scout=use_scout, original_premise=original_premise
     )
 
     # VC runs if idea reached STRONG or better, regardless of min-verdict threshold
