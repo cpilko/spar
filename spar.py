@@ -10,15 +10,22 @@ Usage:
     python spar.py "idea" --rounds 20           # more rounds
     python spar.py "idea" --min-verdict strong  # stop at STRONG
     python spar.py "idea" --vc-rounds 4         # more VC rejection cycles
+    python spar.py "idea" --name "rebate"       # name the session file
+    python spar.py --quick "idea"               # 4 rounds, min-verdict strong
+
+    python spar.py --resume                     # continue latest session with 4 more rounds
+    python spar.py --resume --session 2         # continue a specific session
+    python spar.py --resume --rounds 8          # continue with 8 more rounds
 
     python spar.py --ask "what could be improved?"           # ask about latest session
-    python spar.py --ask "how would you monetize this?"      # follow-up questions
     python spar.py --ask "expand on risk #2" --session 3     # ask about a specific session
+    python spar.py --list                                    # list all sessions
 """
 
 import asyncio
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from claude_agent_sdk import query, ClaudeAgentOptions
@@ -35,17 +42,24 @@ console = Console(width=100)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-ROUNDS = int(sys.argv[sys.argv.index("--rounds") + 1]) if "--rounds" in sys.argv else 12
-VC_MAX_REJECTIONS = int(sys.argv[sys.argv.index("--vc-rounds") + 1]) if "--vc-rounds" in sys.argv else 2
-EXTRA_ROUNDS_PER_REJECTION = 4  # extra sparring rounds after each VC rejection
+def get_arg(flag, default=None, cast=str):
+    """Get a CLI argument value after a flag."""
+    if flag in sys.argv:
+        idx = sys.argv.index(flag)
+        if idx + 1 < len(sys.argv):
+            return cast(sys.argv[idx + 1])
+    return default
+
+QUICK_MODE = "--quick" in sys.argv
+ROUNDS = get_arg("--rounds", 4 if QUICK_MODE else 12, int)
+VC_MAX_REJECTIONS = get_arg("--vc-rounds", 2, int)
+EXTRA_ROUNDS_PER_REJECTION = 4
 WORK_DIR = Path(__file__).parent
 OUTPUT_DIR = WORK_DIR / "sparring_sessions"
 OUTPUT_DIR.mkdir(exist_ok=True)
+SESSION_NAME = get_arg("--name")
 
-MIN_VERDICT = "brilliant"
-if "--min-verdict" in sys.argv:
-    v = sys.argv[sys.argv.index("--min-verdict") + 1].lower()
-    MIN_VERDICT = v
+MIN_VERDICT = "strong" if QUICK_MODE else get_arg("--min-verdict", "brilliant")
 
 # ─── PROMPT LOADING ───────────────────────────────────────────────────────────
 
@@ -60,7 +74,6 @@ def load_prompt(name: str) -> str:
     prompt = prompt_file.read_text()
     research = research_file.read_text()
 
-    # Inject research protocol where placeholder exists
     if "{RESEARCH_PROTOCOL}" in prompt:
         prompt = prompt.replace("{RESEARCH_PROTOCOL}", research)
 
@@ -92,14 +105,12 @@ def parse_verdict(response: str) -> str:
     """Extract verdict/decision from ONLY the VERDICT:/DECISION: line."""
     for line in response.split("\n"):
         line_clean = line.strip()
-        # JUDGE verdict
         match = re.match(
             r'^VERDICT:\s*\*{0,2}\s*(GARBAGE|WEAK|PROMISING|STRONG|FUCKING BRILLIANT)\s*\*{0,2}\s*$',
             line_clean, re.IGNORECASE
         )
         if match:
             return match.group(1).upper()
-        # VC decision
         match = re.match(
             r'^DECISION:\s*\*{0,2}\s*(INVEST|PASS|CONDITIONAL(?:\s*[—\-]\s*NEEDS MORE WORK)?)\s*\*{0,2}\s*$',
             line_clean, re.IGNORECASE
@@ -124,6 +135,32 @@ def render_agent(label: str, text: str):
         padding=(1, 2),
     )
     console.print(panel)
+
+
+def make_outfile(premise: str) -> Path:
+    """Generate output file path from session name or premise."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if SESSION_NAME:
+        slug = SESSION_NAME.replace(" ", "_").lower()
+    else:
+        slug = premise[:40].replace(" ", "_").replace("?", "").replace("'", "").lower()
+    return OUTPUT_DIR / f"spar_{slug}_{timestamp}.txt"
+
+
+def get_sessions() -> list:
+    """Get all sessions sorted by most recent."""
+    return sorted(OUTPUT_DIR.glob("spar_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    elif m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 # ─── ENGINE ───────────────────────────────────────────────────────────────────
 
@@ -184,10 +221,9 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
         console.print()
         transcript.append(f"── ROUND {round_num} ──\n")
 
-        # Full conversation context — everyone sees everything
         convo_so_far = "\n\n".join(transcript)
 
-        # ── EMBER goes FIRST (builder pitches, then destroyer attacks) ──
+        # ── EMBER goes FIRST ──
         if round_num == 1:
             ember_prompt = (
                 f"Someone pitched this idea: \"{premise}\"\n\n"
@@ -211,7 +247,7 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
                     f"they raised — either by solving it or by pivoting away from it. "
                     f"Do NOT ignore the VC feedback.\n\n"
                 )
-                vc_injection_done = True  # Both agents got it, stop injecting
+                vc_injection_done = True
             ember_prompt += (
                 f"Round {round_num}. RESEARCH and BUILD. Review the full history — "
                 f"build on what survived, don't rehash dead ideas. Address RAZOR's "
@@ -224,8 +260,7 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
         render_agent("EMBER", ember_response)
         transcript.append(f"EMBER:\n{ember_response}\n")
 
-        # ── RAZOR goes SECOND (destroyer attacks EMBER's pitch) ──
-        # Rebuild convo context including EMBER's pitch from this round
+        # ── RAZOR goes SECOND ──
         convo_so_far = "\n\n".join(transcript)
 
         if round_num == 1:
@@ -297,36 +332,27 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
             if parsed == "GARBAGE":
                 verdict = "GARBAGE"
                 console.print("  [bold red]✗ VERDICT: GARBAGE — KILL IT AND START OVER[/bold red]\n")
-
             elif parsed == "FUCKING BRILLIANT":
                 verdict = "FUCKING BRILLIANT"
                 console.print()
-                console.print(Panel(
-                    "[bold]★ FUCKING BRILLIANT — ADVANCING TO VC REVIEW ★[/bold]",
-                    border_style="bold green", padding=(1, 4),
-                ))
+                console.print(Panel("[bold]★ FUCKING BRILLIANT — ADVANCING TO VC REVIEW ★[/bold]",
+                                    border_style="bold green", padding=(1, 4)))
                 return verdict, razor_history, ember_history, judge_feedback, round_num
-
             elif parsed == "STRONG":
                 verdict = "STRONG"
                 if MIN_VERDICT == "strong":
                     console.print()
-                    console.print(Panel(
-                        "[bold]★ STRONG — ADVANCING TO VC REVIEW ★[/bold]",
-                        border_style="bold green", padding=(1, 4),
-                    ))
+                    console.print(Panel("[bold]★ STRONG — ADVANCING TO VC REVIEW ★[/bold]",
+                                        border_style="bold green", padding=(1, 4)))
                     return verdict, razor_history, ember_history, judge_feedback, round_num
                 else:
                     console.print("  [dim]...STRONG but we need FUCKING BRILLIANT. Keep fighting...[/dim]\n")
-
             elif parsed == "PROMISING":
                 verdict = "PROMISING"
                 console.print("  [dim]...promising, not there yet. Keep digging...[/dim]\n")
-
             elif parsed == "WEAK":
                 verdict = "WEAK"
                 console.print("  [dim]...weak. Sharpen up or pivot...[/dim]\n")
-
             elif parsed == "UNPARSEABLE":
                 console.print("  [dim yellow]...couldn't parse verdict, treating as PROMISING...[/dim yellow]\n")
                 verdict = "PROMISING"
@@ -340,7 +366,6 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
 
 async def run_vc_review(premise: str, transcript: list, attempt: int) -> tuple:
     """Run VC due diligence. Returns (decision, vc_response)."""
-
     console.print()
     console.rule(f"[bold green]VC REVIEW — Attempt {attempt}[/bold green]", style="bold green")
     console.print()
@@ -359,8 +384,7 @@ async def run_vc_review(premise: str, transcript: list, attempt: int) -> tuple:
             f"The idea was PREVIOUSLY REJECTED by you and sent back for more sparring. "
             f"The agents have done additional rounds to address your concerns. "
             f"Evaluate whether the new work ACTUALLY resolves the issues you raised, "
-            f"or if they just hand-waved past them. Be HARDER this time — ideas that "
-            f"come back without meaningfully improving deserve a PASS, not endless chances.\n\n"
+            f"or if they just hand-waved past them. Be HARDER this time.\n\n"
         )
     vc_prompt += (
         f"Run your FULL 8-point due diligence checklist. Search the web for EVERY item. "
@@ -387,7 +411,6 @@ PITCHER = load_prompt("pitch")
 
 async def run_final_pitch(premise: str, transcript: list) -> str:
     """Generate final pitch summary of the entire session."""
-
     console.print()
     console.rule("[bold magenta]FINAL PITCH[/bold magenta]", style="bold magenta")
     console.print()
@@ -412,9 +435,8 @@ async def run_final_pitch(premise: str, transcript: list) -> str:
 # ─── MAIN LOOP ────────────────────────────────────────────────────────────────
 
 async def spar(premise: str):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    slug = premise[:40].replace(" ", "_").replace("?", "").replace("'", "").lower()
-    outfile = OUTPUT_DIR / f"spar_{slug}_{timestamp}.txt"
+    start_time = time.time()
+    outfile = make_outfile(premise)
 
     transcript = []
     transcript.append(f"{'='*70}")
@@ -423,13 +445,14 @@ async def spar(premise: str):
     transcript.append(f"ROUNDS: {ROUNDS} | MIN VERDICT: {MIN_VERDICT.upper()} | VC MAX REJECTIONS: {VC_MAX_REJECTIONS}")
     transcript.append(f"{'='*70}\n")
 
+    mode_label = "QUICK MODE" if QUICK_MODE else "SPARRING SESSION"
     console.print()
     console.print(Panel(
         f"[dim]Premise:[/dim] {premise}\n"
         f"[dim]Rounds:[/dim] {ROUNDS} | "
         f"[dim]Exit threshold:[/dim] {MIN_VERDICT.upper()} | "
         f"[dim]VC rejection cycles:[/dim] {VC_MAX_REJECTIONS}",
-        title="⚔️  SPARRING SESSION",
+        title=f"⚔️  {mode_label}",
         title_align="left",
         border_style="bold white",
         padding=(1, 2),
@@ -442,14 +465,14 @@ async def spar(premise: str):
         razor_history="", ember_history="", judge_feedback=""
     )
 
-    # If sparring didn't reach threshold, save and exit
     threshold_met = (
         (MIN_VERDICT == "strong" and verdict in ("STRONG", "FUCKING BRILLIANT")) or
         (MIN_VERDICT in ("brilliant", "fucking brilliant") and verdict == "FUCKING BRILLIANT")
     )
 
+    elapsed = time.time() - start_time
+
     if not threshold_met:
-        # ─── Final pitch even on failure — the graveyard is valuable ───
         await run_final_pitch(premise, transcript)
 
         transcript.append(f"\n{'='*70}")
@@ -459,7 +482,7 @@ async def spar(premise: str):
         console.print()
         console.print(Panel(
             f"[bold]Final Verdict: [red]{verdict}[/red][/bold]\n"
-            f"[dim]Did not reach VC review threshold. Transcript saved: {outfile}[/dim]",
+            f"[dim]Rounds: {last_round} | Time: {format_duration(elapsed)} | Saved: {outfile.name}[/dim]",
             title="SESSION COMPLETE",
             title_align="left",
             border_style="bold white",
@@ -471,86 +494,62 @@ async def spar(premise: str):
     final_decision = "PASS"
     vc_rejection_feedback = ""
 
-    for vc_attempt in range(1, VC_MAX_REJECTIONS + 2):  # +2 because first attempt isn't a "rejection"
+    for vc_attempt in range(1, VC_MAX_REJECTIONS + 2):
         decision, vc_response = await run_vc_review(premise, transcript, vc_attempt)
 
         if decision == "INVEST":
             final_decision = "INVEST"
             console.print()
-            console.print(Panel(
-                "[bold green]💰 DECISION: INVEST — THE VC IS IN 💰[/bold green]",
-                border_style="bold green", padding=(1, 4),
-            ))
+            console.print(Panel("[bold green]💰 DECISION: INVEST — THE VC IS IN 💰[/bold green]",
+                                border_style="bold green", padding=(1, 4)))
             break
-
         elif decision == "PASS":
             final_decision = "PASS"
             console.print()
-            console.print(Panel(
-                "[bold red]✗ DECISION: PASS — THE VC WALKED AWAY[/bold red]",
-                border_style="bold red", padding=(1, 4),
-            ))
-
+            console.print(Panel("[bold red]✗ DECISION: PASS — THE VC WALKED AWAY[/bold red]",
+                                border_style="bold red", padding=(1, 4)))
             if vc_attempt <= VC_MAX_REJECTIONS:
-                console.print(f"  [dim]VC rejected. Sending back for {EXTRA_ROUNDS_PER_REJECTION} more sparring rounds "
+                console.print(f"  [dim]VC rejected. {EXTRA_ROUNDS_PER_REJECTION} more rounds "
                               f"(rejection {vc_attempt}/{VC_MAX_REJECTIONS})...[/dim]\n")
                 vc_rejection_feedback = vc_response
-
-                # Extra sparring rounds to address VC concerns
                 verdict, razor_h, ember_h, judge_fb, last_round = await run_sparring(
-                    premise, transcript,
-                    start_round=last_round + 1,
+                    premise, transcript, start_round=last_round + 1,
                     num_rounds=EXTRA_ROUNDS_PER_REJECTION,
                     razor_history=razor_h, ember_history=ember_h,
-                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback
-                )
+                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback)
             else:
-                console.print(f"  [dim]Max VC rejections ({VC_MAX_REJECTIONS}) reached. Ending session.[/dim]\n")
                 break
-
         elif decision == "CONDITIONAL":
             final_decision = "CONDITIONAL"
             console.print()
-            console.print(Panel(
-                "[bold yellow]⚠ DECISION: CONDITIONAL — NEEDS MORE WORK[/bold yellow]",
-                border_style="bold yellow", padding=(1, 4),
-            ))
-
+            console.print(Panel("[bold yellow]⚠ DECISION: CONDITIONAL — NEEDS MORE WORK[/bold yellow]",
+                                border_style="bold yellow", padding=(1, 4)))
             if vc_attempt <= VC_MAX_REJECTIONS:
-                console.print(f"  [dim]VC wants more work. {EXTRA_ROUNDS_PER_REJECTION} more sparring rounds "
+                console.print(f"  [dim]VC wants more work. {EXTRA_ROUNDS_PER_REJECTION} more rounds "
                               f"(attempt {vc_attempt}/{VC_MAX_REJECTIONS})...[/dim]\n")
                 vc_rejection_feedback = vc_response
-
                 verdict, razor_h, ember_h, judge_fb, last_round = await run_sparring(
-                    premise, transcript,
-                    start_round=last_round + 1,
+                    premise, transcript, start_round=last_round + 1,
                     num_rounds=EXTRA_ROUNDS_PER_REJECTION,
                     razor_history=razor_h, ember_history=ember_h,
-                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback
-                )
+                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback)
             else:
-                console.print(f"  [dim]Max VC attempts ({VC_MAX_REJECTIONS}) reached. Ending session.[/dim]\n")
                 break
-
         else:
-            console.print(f"  [dim yellow]...couldn't parse VC decision, treating as CONDITIONAL...[/dim yellow]\n")
             final_decision = "CONDITIONAL"
             if vc_attempt <= VC_MAX_REJECTIONS:
                 vc_rejection_feedback = vc_response
                 verdict, razor_h, ember_h, judge_fb, last_round = await run_sparring(
-                    premise, transcript,
-                    start_round=last_round + 1,
+                    premise, transcript, start_round=last_round + 1,
                     num_rounds=EXTRA_ROUNDS_PER_REJECTION,
                     razor_history=razor_h, ember_history=ember_h,
-                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback
-                )
+                    judge_feedback=judge_fb, vc_rejection=vc_rejection_feedback)
             else:
                 break
 
-    # ─── Final pitch ───
     await run_final_pitch(premise, transcript)
 
-    # ─── Save ───
+    elapsed = time.time() - start_time
     transcript.append(f"\n{'='*70}")
     transcript.append(f"FINAL VC DECISION: {final_decision}")
     transcript.append(f"TOTAL ROUNDS: {last_round}")
@@ -562,7 +561,96 @@ async def spar(premise: str):
     console.print()
     console.print(Panel(
         f"[bold]VC Decision: [{d_color}]{final_decision}[/{d_color}][/bold]\n"
-        f"[dim]Total rounds: {last_round} | Transcript saved: {outfile}[/dim]",
+        f"[dim]Rounds: {last_round} | Time: {format_duration(elapsed)} | Saved: {outfile.name}[/dim]",
+        title="SESSION COMPLETE",
+        title_align="left",
+        border_style="bold white",
+        padding=(1, 2),
+    ))
+
+
+# ─── RESUME MODE ─────────────────────────────────────────────────────────────
+
+async def resume_session(session_index: int = 0, extra_rounds: int = 4):
+    """Load a past session and continue sparring."""
+    sessions = get_sessions()
+    if not sessions:
+        console.print("[red]No sparring sessions found.[/red]")
+        return
+    if session_index >= len(sessions):
+        console.print(f"[red]Only {len(sessions)} sessions found.[/red]")
+        return
+
+    session_file = sessions[session_index]
+    old_transcript = session_file.read_text()
+
+    # Extract premise
+    premise = ""
+    for line in old_transcript.split("\n"):
+        if line.startswith("PREMISE:"):
+            premise = line.replace("PREMISE: ", "")
+            break
+
+    if not premise:
+        console.print("[red]Couldn't find premise in session file.[/red]")
+        return
+
+    # Find last round number
+    last_round = 0
+    for line in old_transcript.split("\n"):
+        m = re.match(r'^── ROUND (\d+) ──', line)
+        if m:
+            last_round = int(m.group(1))
+
+    # Rebuild transcript as list
+    transcript = old_transcript.split("\n")
+
+    # Remove old final result lines
+    transcript = [l for l in transcript if not l.startswith("FINAL") and not l.startswith("====")]
+    # Remove old FINAL PITCH section
+    pitch_idx = None
+    for i, l in enumerate(transcript):
+        if "FINAL PITCH:" in l:
+            pitch_idx = i
+            break
+    if pitch_idx is not None:
+        transcript = transcript[:pitch_idx]
+
+    start_time = time.time()
+
+    console.print()
+    console.print(Panel(
+        f"[dim]Resuming:[/dim] {session_file.name}\n"
+        f"[dim]Premise:[/dim] {premise[:80]}\n"
+        f"[dim]Continuing from round {last_round}, adding {extra_rounds} rounds[/dim]",
+        title="⚔️  RESUME SESSION",
+        title_align="left",
+        border_style="bold white",
+        padding=(1, 2),
+    ))
+
+    verdict, razor_h, ember_h, judge_fb, new_last_round = await run_sparring(
+        premise, transcript,
+        start_round=last_round + 1, num_rounds=extra_rounds,
+        razor_history="", ember_history="", judge_feedback=""
+    )
+
+    await run_final_pitch(premise, transcript)
+
+    elapsed = time.time() - start_time
+    transcript.append(f"\n{'='*70}")
+    transcript.append(f"FINAL RESULT: Resumed session ended at {verdict} (rounds {last_round + 1}-{new_last_round})")
+    transcript.append(f"{'='*70}")
+
+    # Save as new file
+    outfile = make_outfile(premise)
+    outfile.write_text("\n".join(transcript))
+
+    v_color = "green" if verdict in ("STRONG", "FUCKING BRILLIANT") else "yellow" if verdict == "PROMISING" else "red"
+    console.print()
+    console.print(Panel(
+        f"[bold]Final Verdict: [{v_color}]{verdict}[/{v_color}][/bold]\n"
+        f"[dim]Rounds: {new_last_round} | Time: {format_duration(elapsed)} | Saved: {outfile.name}[/dim]",
         title="SESSION COMPLETE",
         title_align="left",
         border_style="bold white",
@@ -574,23 +662,17 @@ async def spar(premise: str):
 
 async def ask_session(question: str, session_index: int = 0):
     """Load a past session transcript and ask a question about it."""
-
-    # List sessions by most recent
-    sessions = sorted(OUTPUT_DIR.glob("spar_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
-
+    sessions = get_sessions()
     if not sessions:
         console.print("[red]No sparring sessions found.[/red]")
         return
-
     if session_index >= len(sessions):
-        console.print(f"[red]Only {len(sessions)} sessions found. Use --session 0-{len(sessions)-1}.[/red]")
+        console.print(f"[red]Only {len(sessions)} sessions found.[/red]")
         return
 
     session_file = sessions[session_index]
     transcript = session_file.read_text()
 
-    # Show which session we're asking about
-    first_lines = transcript.split("\n")[:5]
     console.print()
     console.print(Panel(
         f"[dim]Session:[/dim] {session_file.name}\n"
@@ -627,42 +709,60 @@ if __name__ == "__main__":
         print(__doc__)
         sys.exit(0)
 
-    # List sessions: --list
+    # --list
     if "--list" in sys.argv:
-        sessions = sorted(OUTPUT_DIR.glob("spar_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        sessions = get_sessions()
         if not sessions:
             console.print("[red]No sparring sessions found.[/red]")
         else:
             console.print()
             for i, s in enumerate(sessions):
-                first_line = ""
-                for line in s.read_text().split("\n"):
+                text = s.read_text()
+                premise = ""
+                for line in text.split("\n"):
                     if line.startswith("PREMISE:"):
-                        first_line = line.replace("PREMISE: ", "")
+                        premise = line.replace("PREMISE: ", "")
                         break
                 verdict = ""
-                for line in s.read_text().split("\n"):
+                for line in text.split("\n"):
                     if line.startswith("FINAL"):
                         verdict = line
                         break
-                age = "latest" if i == 0 else f"#{i}"
-                console.print(f"  [bold]{age:>6}[/bold]  {first_line[:70]}")
-                console.print(f"         [dim]{verdict}  —  {s.name}[/dim]")
+                tag = "latest" if i == 0 else f"#{i}"
+                console.print(f"  [bold]{tag:>6}[/bold]  {premise[:70]}")
+                console.print(f"         [dim]{verdict}[/dim]")
                 console.print()
         sys.exit(0)
 
-    # Ask mode: --ask "question" [--session N]
+    # --ask
     if "--ask" in sys.argv:
         ask_idx = sys.argv.index("--ask")
         question = sys.argv[ask_idx + 1] if ask_idx + 1 < len(sys.argv) else None
         if not question:
             console.print("[red]Usage: python spar.py --ask \"your question\"[/red]")
             sys.exit(1)
-        session_idx = int(sys.argv[sys.argv.index("--session") + 1]) if "--session" in sys.argv else 0
+        session_idx = get_arg("--session", 0, int)
         asyncio.run(ask_session(question, session_idx))
         sys.exit(0)
 
-    # Check if premise was passed as arg or needs interactive input
+    # --resume
+    if "--resume" in sys.argv:
+        session_idx = get_arg("--session", 0, int)
+        extra = get_arg("--rounds", 4, int)
+        asyncio.run(resume_session(session_idx, extra))
+        sys.exit(0)
+
+    # --quick grabs the next arg as premise
+    if QUICK_MODE:
+        quick_idx = sys.argv.index("--quick")
+        premise = sys.argv[quick_idx + 1] if quick_idx + 1 < len(sys.argv) and not sys.argv[quick_idx + 1].startswith("--") else None
+        if not premise:
+            console.print("[red]Usage: python spar.py --quick \"your idea\"[/red]")
+            sys.exit(1)
+        asyncio.run(spar(premise))
+        sys.exit(0)
+
+    # Normal mode: premise as arg or interactive
     non_flag_args = [a for a in sys.argv[1:] if not a.startswith("--") and
                      (sys.argv.index(a) == 1 or not sys.argv[sys.argv.index(a) - 1].startswith("--"))]
 
@@ -677,7 +777,7 @@ if __name__ == "__main__":
             try:
                 line = input()
                 if line == "" and lines and lines[-1] == "":
-                    lines.pop()  # remove trailing blank
+                    lines.pop()
                     break
                 lines.append(line)
             except EOFError:
