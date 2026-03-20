@@ -14,9 +14,9 @@ Then a VC tries to kill it.
 
 ---
 
-You throw in an idea — startup, career move, anything. Two agents fight over it with live web research. One builds, one destroys. A judge with impossible standards decides when it's good enough. If it passes, a VC does due diligence. At the end you get a one-page summary with dead ideas, the survivor, and what to do Monday.
+You throw in an idea (startup, career move, whatever). Two agents fight over it with live web research. One builds, one destroys. A judge with impossible standards decides when it's good enough. If it passes, a VC does due diligence. At the end you get a one-page summary with dead ideas, the survivor, and what to do Monday.
 
-Not just startups. Career decisions, side projects, life plans — anything you want pressure-tested against real evidence instead of vibes.
+Not just startups. Career decisions, side projects, life plans. Anything you want pressure-tested against real evidence instead of vibes.
 
 Works with Claude Max (no API key) or an Anthropic API key. All agents run on Opus with extended thinking.
 
@@ -108,7 +108,7 @@ Transcripts save to `sparring_sessions/` with timestamps.
 
 ## Edit the agents
 
-Each agent is a markdown file. Change personalities, rules, gates — no code.
+Each agent is a markdown file. Change personalities, rules, gates. No code to touch.
 
 ```
 prompts/
@@ -124,23 +124,23 @@ Want a harsher judge? Edit `judge.md`. Want RAZOR to focus on unit economics? Ed
 
 ## What actually happens
 
-**Startup ideas — 20 rounds, 9 dead, 1 survivor:**
+**Startup ideas (20 rounds, 9 dead, 1 survivor):**
 
-Told it to go find unsolved pain points on its own. It searched Reddit, HN, G2 reviews. Nine ideas died — the destroyer found a funded competitor every time. Agency content tools (10+ incumbents), scope creep billing (Ignition at $330M), machine shop quoting (Paperless Parts at $51M), equipment rental analytics (Point-of-Rental shipped it 18 days before the pitch).
+Told it to go find unsolved pain points on its own. It searched Reddit, HN, G2 reviews. Nine ideas died because the destroyer found a funded competitor every time. Agency content tools (10+ incumbents), scope creep billing (Ignition at $330M), machine shop quoting (Paperless Parts at $51M), equipment rental analytics (Point-of-Rental shipped it 18 days before the pitch).
 
 The one that survived: a $49/mo rebate tracker for wholesale distributors still using Excel. 52% don't collect all earned rebates. One distributor found $300K in missing money. The only competitor costs $20K+/year. Boring. Probably real.
 
-**Career decisions — 8 rounds:**
+**Career decisions (8 rounds):**
 
 Fed it a career plan (relocating, salary negotiation, freelance transition timeline). The agents researched actual market rates, tax structures by region, employer margins, and told the person their freelance rate target was below market with the credentials they had. Cited specific salary databases and tax rates.
 
-**The agents fact-check each other.** In one session RAZOR claimed a company was dead. EMBER went to the actual GitHub repo and website to verify — still alive. RAZOR had fabricated evidence. In another session EMBER faked a statistic. RAZOR caught it by fetching the source and showing the number wasn't there.
+**The agents fact-check each other.** In one session RAZOR claimed a company was dead. EMBER went to the actual GitHub repo and website to verify. Still alive. RAZOR had fabricated evidence. In another session EMBER faked a statistic. RAZOR caught it by fetching the source and showing the number wasn't there.
 
 ## Why it works
 
 Brainstorming accumulates enthusiasm. This accumulates evidence.
 
-Every claim gets searched. The judge tracks which issues go unaddressed — if the same gap persists for two rounds, the verdict gets downgraded. Standing still means moving backwards. The agents have a research budget of 20 web searches per round and 10K tokens of extended thinking. They run on Opus.
+Every claim gets searched. The judge tracks which issues go unaddressed. If the same gap persists for two rounds, the verdict gets downgraded. Standing still means moving backwards. The agents get 20 web searches per round and 10K tokens of extended thinking. They run on Opus.
 
 ## License
 
