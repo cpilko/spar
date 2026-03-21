@@ -118,12 +118,19 @@ def parse_verdict(response: str) -> str:
         if match:
             return match.group(1).upper()
         match = re.match(
-            r'^DECISION:\s*\*{0,2}\s*(INVEST|PASS|CONDITIONAL(?:\s*[—\-]\s*NEEDS MORE WORK)?)\s*\*{0,2}\s*$',
+            r'^DECISION:\s*\*{0,2}\s*(INVEST|PASS|PURSUE|BUILD|MODIFY|REJECT|CONDITIONAL(?:\s*[—\-]\s*NEEDS MORE WORK)?)\s*\*{0,2}\s*$',
             line_clean, re.IGNORECASE
         )
         if match:
             raw = match.group(1).upper().strip()
             if raw.startswith("CONDITIONAL"):
+                return "CONDITIONAL"
+            # Map career/bootstrap decisions to the flow equivalents
+            if raw in ("PURSUE", "BUILD"):
+                return "INVEST"
+            if raw in ("REJECT",):
+                return "PASS"
+            if raw in ("MODIFY",):
                 return "CONDITIONAL"
             return raw
     return "UNPARSEABLE"
