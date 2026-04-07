@@ -7,7 +7,6 @@
 Then a VC tries to kill it.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-required-orange.svg)](https://claude.ai/code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 </div>
@@ -18,7 +17,7 @@ You throw in an idea (startup, career move, whatever). Two agents fight over it 
 
 Not just startups. Career decisions, side projects, life plans. Anything you want pressure-tested against real evidence instead of vibes.
 
-Works with Claude Max (no API key) or an Anthropic API key. All agents run on Opus with extended thinking.
+Works with OpenAI models (requires `OPENAI_API_KEY`). All agents use extended reasoning models (e.g., `gpt-4o`).
 
 ## The agents
 
@@ -56,23 +55,19 @@ The judge has nine binary gates for its top verdict. A real person has to have e
 
 ## Setup
 
-Python 3.10+ and [Claude Code](https://claude.ai/code).
+Python 3.10+.
 
 ```bash
 git clone https://github.com/sofianedjerbi/spar.git
 cd spar
-pip install claude-agent-sdk rich
+pip install openai-agents openai rich
 ```
 
-Authenticate Claude Code once (Max subscription or API key):
+Authenticate with OpenAI:
 
 ```bash
-claude                              # browser login for Max
-# or
-export ANTHROPIC_API_KEY="sk-ant-..." # API key
+export OPENAI_API_KEY="sk-..."
 ```
-
-Done.
 
 ## Usage
 
@@ -148,7 +143,7 @@ Fed it a career plan (relocating, salary negotiation, freelance transition timel
 
 Brainstorming accumulates enthusiasm. This accumulates evidence.
 
-Every claim gets searched. The judge tracks which issues go unaddressed. If the same gap persists for two rounds, the verdict gets downgraded. Standing still means moving backwards. The agents get 20 web searches per round and 10K tokens of extended thinking. They run on Opus.
+Every claim gets searched. The judge tracks which issues go unaddressed. If the same gap persists for two rounds, the verdict gets downgraded. Standing still means moving backwards. The agents get 20 web searches per round and 10K tokens of extended thinking.
 
 ## License
 

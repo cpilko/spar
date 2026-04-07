@@ -26,24 +26,42 @@ Usage:
 """
 
 import asyncio
+import os
 import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from claude_agent_sdk import query, ClaudeAgentOptions
-from claude_agent_sdk.types import (
-    ResultMessage, AssistantMessage, TextBlock, ToolUseBlock, ToolResultBlock,
-    ThinkingConfigEnabled
-)
+from typing import Any, Awaitable, Callable
+
+import httpx
+from agents import Agent, FunctionTool, Runner, OpenAIChatCompletionsModel, RunResultStreaming, WebSearchTool
+from agents.tool import ToolContext
+from openai import AsyncOpenAI
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
 
 console = Console(width=100)
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
+USE_OPENAI_SDK = os.environ.get("SPAR_SDK", "openai").lower() in ("openai", "oa")
+
+DIM = "\033[2m"
+MAGENTA = "\033[95m"
+RESET = "\033[0m"
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+DEFAULT_MODEL = "gpt-4o-2024-08-06"
+MAX_TURNS = 40
+
+if USE_OPENAI_SDK and OPENAI_API_KEY:
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    model = OpenAIChatCompletionsModel(model=DEFAULT_MODEL, openai_client=openai_client)
+else:
+    model = None
+
 
 def get_arg(flag, default=None, cast=str):
     """Get a CLI argument value after a flag."""
@@ -52,6 +70,7 @@ def get_arg(flag, default=None, cast=str):
         if idx + 1 < len(sys.argv):
             return cast(sys.argv[idx + 1])
     return default
+
 
 QUICK_MODE = "--quick" in sys.argv
 SCOUT_MODE = "--scout" in sys.argv
@@ -64,8 +83,6 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 SESSION_NAME = get_arg("--name")
 
 MIN_VERDICT = "strong" if QUICK_MODE else get_arg("--min-verdict", "brilliant")
-
-# ─── PROMPT LOADING ───────────────────────────────────────────────────────────
 
 PROMPTS_DIR = WORK_DIR / "prompts"
 
@@ -90,8 +107,6 @@ JUDGE = load_prompt("judge")
 VC = load_prompt("viper")
 SCOUT = load_prompt("scout")
 
-# ─── STYLE CONFIG ─────────────────────────────────────────────────────────────
-
 AGENT_STYLES = {
     "RAZOR": {"border": "red", "icon": "🔪", "title_style": "bold red"},
     "EMBER": {"border": "yellow", "icon": "🔥", "title_style": "bold yellow"},
@@ -101,10 +116,6 @@ AGENT_STYLES = {
     "SCOUT": {"border": "blue", "icon": "🔭", "title_style": "bold blue"},
     "ASK": {"border": "white", "icon": "🔍", "title_style": "bold white"},
 }
-
-DIM = "\033[2m"
-MAGENTA = "\033[95m"
-RESET = "\033[0m"
 
 
 def parse_verdict(response: str) -> tuple:
@@ -126,7 +137,6 @@ def parse_verdict(response: str) -> tuple:
         if match:
             raw = match.group(1).upper().strip()
             display = raw.split("—")[0].split("-")[0].strip() if raw.startswith("CONDITIONAL") else raw
-            # Map to flow equivalents
             if raw.startswith("CONDITIONAL"):
                 return "CONDITIONAL", display
             if raw in ("PURSUE", "BUILD"):
@@ -178,48 +188,218 @@ def format_duration(seconds: float) -> str:
         return f"{m}m {s}s"
     return f"{s}s"
 
-# ─── ENGINE ───────────────────────────────────────────────────────────────────
+
+async def read_file_tool(ctx: ToolContext, path: str) -> str:
+    """Read contents of a file."""
+    try:
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            file_path = WORK_DIR / path
+        return file_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+async def glob_files_tool(ctx: ToolContext, pattern: str) -> str:
+    """List files matching a glob pattern."""
+    try:
+        if not pattern.startswith("/"):
+            pattern = str(WORK_DIR / pattern)
+        matches = list(Path("/").glob(pattern))
+        if not matches:
+            return "No files found matching pattern."
+        return "\n".join(str(m) for m in matches[:50])
+    except Exception as e:
+        return f"Error searching files: {e}"
+
+
+async def grep_files_tool(ctx: ToolContext, pattern: str, file_pattern: str = "*.py") -> str:
+    """Search for pattern in files matching file_pattern."""
+    try:
+        results = []
+        search_dir = WORK_DIR
+        if "/" in pattern:
+            parts = pattern.rsplit("/", 1)
+            if "*" in parts[0]:
+                search_dir = Path("/".join(parts[:-1]))
+                pattern = parts[-1]
+        for f in search_dir.rglob(file_pattern):
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+                for i, line in enumerate(content.split("\n"), 1):
+                    if re.search(pattern, line, re.IGNORECASE):
+                        results.append(f"{f}:{i}: {line.rstrip()}")
+            except Exception:
+                continue
+        if not results:
+            return "No matches found."
+        return "\n".join(results[:100])
+    except Exception as e:
+        return f"Error grepping files: {e}"
+
+
+async def web_fetch_tool_impl(ctx: ToolContext, url: str) -> str:
+    """Fetch content from a URL."""
+    try:
+        response = httpx.get(url, timeout=30.0, follow_redirects=True)
+        response.raise_for_status()
+        content = response.text
+        if len(content) > 50000:
+            content = content[:50000] + "\n[truncated]"
+        return content
+    except Exception as e:
+        return f"Error fetching URL: {e}"
+
+
+web_search_tool = WebSearchTool()
+
+read_file_function_tool = FunctionTool(
+    name="Read",
+    description="Read the contents of a file from the local filesystem.",
+    params_json_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "The file path to read"
+            }
+        },
+        "required": ["path"]
+    },
+    on_invoke_tool=read_file_tool
+)
+
+glob_files_function_tool = FunctionTool(
+    name="Glob",
+    description="List files matching a glob pattern. Use for finding files by name patterns.",
+    params_json_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "The glob pattern to match (e.g., '*.py', 'src/**/*.js')"
+            }
+        },
+        "required": ["pattern"]
+    },
+    on_invoke_tool=glob_files_tool
+)
+
+grep_files_function_tool = FunctionTool(
+    name="Grep",
+    description="Search for a text pattern in files. Returns matching lines with file:line:content format.",
+    params_json_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "The regex pattern to search for"
+            },
+            "file_pattern": {
+                "type": "string",
+                "description": "File pattern to search in (default: '*.py')",
+                "default": "*.py"
+            }
+        },
+        "required": ["pattern"]
+    },
+    on_invoke_tool=grep_files_tool
+)
+
+web_fetch_function_tool = FunctionTool(
+    name="WebFetch",
+    description="Fetch the content of a webpage from a URL.",
+    params_json_schema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The URL to fetch content from"
+            }
+        },
+        "required": ["url"]
+    },
+    on_invoke_tool=web_fetch_tool_impl
+)
+
+
+def create_agent(instructions: str, label: str) -> Agent:
+    """Create an OpenAI Agent with the given instructions and tools."""
+    return Agent(
+        name=label,
+        instructions=instructions,
+        model=model,
+        tools=[
+            web_search_tool,
+            web_fetch_function_tool,
+            read_file_function_tool,
+            glob_files_function_tool,
+            grep_files_function_tool,
+        ],
+    )
+
+
+AGENTS: dict[str, Agent] = {}
+
+
+def get_or_create_agent(prompt_text: str, label: str) -> Agent:
+    """Get cached agent or create new one."""
+    if label not in AGENTS:
+        AGENTS[label] = create_agent(prompt_text, label)
+    return AGENTS[label]
+
 
 async def ask_agent(system_prompt: str, prompt: str, label: str, color: str) -> str:
     """Fire a query, stream tool usage live, collect final text."""
-    result_text = ""
-    all_text_blocks = []
+    if not USE_OPENAI_SDK or not model:
+        return "(no response - SDK not configured)"
 
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=system_prompt,
-            permission_mode="bypassPermissions",
-            cwd=str(WORK_DIR),
-            max_turns=40,
-            model="claude-opus-4-6",
-            thinking=ThinkingConfigEnabled(type="enabled", budget_tokens=10000),
-        ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, ToolUseBlock):
-                    tool_name = block.name
-                    tool_input = block.input
-                    if tool_name in ("WebSearch", "WebFetch"):
-                        search_term = tool_input.get("query", tool_input.get("url", tool_input.get("prompt", "")))
-                        print(f"{DIM}{MAGENTA}    [{label} searching: {search_term[:120]}]{RESET}")
-                    elif tool_name in ("Read", "Glob", "Grep"):
-                        target = tool_input.get("file_path", tool_input.get("pattern", tool_input.get("query", "")))
-                        print(f"{DIM}{MAGENTA}    [{label} reading: {target[:120]}]{RESET}")
-                    else:
-                        print(f"{DIM}{MAGENTA}    [{label} using {tool_name}]{RESET}")
-                elif isinstance(block, TextBlock):
-                    all_text_blocks.append(block.text)
+    try:
+        text_parts = []
 
-        elif isinstance(message, ResultMessage):
-            if message.result:
-                result_text = message.result
+        stream: RunResultStreaming = Runner.run_streamed(
+            get_or_create_agent(system_prompt, label),
+            prompt,
+            max_turns=MAX_TURNS,
+        )
 
-    if not result_text and all_text_blocks:
-        result_text = "\n".join(all_text_blocks)
+        async for event in stream.stream_events():
+            if hasattr(event, 'type'):
+                if event.type == "agent_output":
+                    if hasattr(event, 'raw_parsed'):
+                        for item in event.raw_parsed:
+                            if hasattr(item, 'type'):
+                                if item.type == "reasoning":
+                                    pass
+                                elif item.type == "tool_call":
+                                    tool_name = getattr(item, 'name', 'unknown')
+                                    tool_args = getattr(item, 'arguments', {})
+                                    if tool_name in ("WebSearch", "web_search"):
+                                        query = tool_args.get("query", "") if isinstance(tool_args, dict) else str(tool_args)
+                                        print(f"{DIM}{MAGENTA}    [{label} searching: {str(query)[:120]}]{RESET}")
+                                    elif tool_name in ("WebFetch", "web_fetch"):
+                                        url = tool_args.get("url", "") if isinstance(tool_args, dict) else str(tool_args)
+                                        print(f"{DIM}{MAGENTA}    [{label} fetching: {str(url)[:120]}]{RESET}")
+                                    elif tool_name in ("Read",):
+                                        path = tool_args.get("path", "") if isinstance(tool_args, dict) else str(tool_args)
+                                        print(f"{DIM}{MAGENTA}    [{label} reading: {str(path)[:120]}]{RESET}")
+                                    elif tool_name in ("Glob",):
+                                        pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
+                                        print(f"{DIM}{MAGENTA}    [{label} glob: {str(pattern)[:120]}]{RESET}")
+                                    elif tool_name in ("Grep",):
+                                        pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
+                                        print(f"{DIM}{MAGENTA}    [{label} grep: {str(pattern)[:120]}]{RESET}")
+                                    else:
+                                        print(f"{DIM}{MAGENTA}    [{label} using {tool_name}]{RESET}")
+                                elif item.type == "output_text":
+                                    if hasattr(item, 'text'):
+                                        text_parts.append(item.text)
 
-    return result_text.strip() if result_text else "(no response)"
+        final_result = stream.final_output_as(str)
+        return final_result.strip() if final_result else "(no response)"
+
+    except Exception as e:
+        return f"(error: {str(e)})"
 
 
 # ─── SPARRING PHASE ──────────────────────────────────────────────────────────
@@ -233,10 +413,9 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
     vc_injection_done = False
 
     for round_num in range(start_round, start_round + num_rounds):
-        # ── SCOUT every 3 rounds (if enabled) ──
         if use_scout and round_num > 1 and (round_num - 1) % 3 == 0:
             scout_premise = original_premise or premise
-            convo_summary = "\n\n".join(transcript[-20:])  # last ~20 entries for context
+            convo_summary = "\n\n".join(transcript[-20:])
             scout_prompt = (
                 f"The sparring session is at round {round_num}. Here's what happened so far "
                 f"(recent context):\n\n---\n{convo_summary}\n---\n\n"
@@ -259,7 +438,6 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
 
         convo_so_far = "\n\n".join(transcript)
 
-        # ── EMBER goes FIRST ──
         if round_num == 1:
             ember_prompt = (
                 f"Someone pitched this idea: \"{premise}\"\n\n"
@@ -296,7 +474,6 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
         render_agent("EMBER", ember_response)
         transcript.append(f"EMBER:\n{ember_response}\n")
 
-        # ── RAZOR goes SECOND ──
         convo_so_far = "\n\n".join(transcript)
 
         if round_num == 1:
@@ -334,7 +511,6 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
         render_agent("RAZOR", razor_response)
         transcript.append(f"RAZOR:\n{razor_response}\n")
 
-        # ── JUDGE every 2 rounds or last round ──
         if round_num % 2 == 0 or round_num == (start_round + num_rounds - 1):
             full_transcript = "\n\n".join(transcript)
             judge_prompt = (
@@ -516,13 +692,11 @@ async def spar(premise: str, use_scout: bool = False):
         padding=(1, 2),
     ))
 
-    # ─── Phase 0: Scout (optional) ───
     original_premise = premise
     if use_scout:
         scout_output = await run_scout(premise, transcript)
         premise = f"SCOUT found this pain point. The user's original constraints were:\n{premise}\n\nSCOUT's research and selected premise:\n{scout_output}\n\nBuild on SCOUT's finding. Verify it, sharpen it, and pitch it."
 
-    # ─── Phase 1: Initial sparring ───
     verdict, razor_h, ember_h, judge_fb, last_round = await run_sparring(
         premise, transcript,
         start_round=1, num_rounds=ROUNDS,
@@ -530,7 +704,6 @@ async def spar(premise: str, use_scout: bool = False):
         use_scout=use_scout, original_premise=original_premise
     )
 
-    # VC runs if idea reached STRONG or better, regardless of min-verdict threshold
     vc_eligible = verdict in ("STRONG", "FUCKING BRILLIANT")
 
     if not vc_eligible:
@@ -552,7 +725,6 @@ async def spar(premise: str, use_scout: bool = False):
         ))
         return
 
-    # ─── Phase 2: VC review loop ───
     final_decision = "PASS"
     final_display = "PASS"
     vc_rejection_feedback = ""
@@ -651,7 +823,6 @@ async def resume_session(session_index: int = 0, extra_rounds: int = 4):
     session_file = sessions[session_index]
     old_transcript = session_file.read_text()
 
-    # Extract premise
     premise = ""
     for line in old_transcript.split("\n"):
         if line.startswith("PREMISE:"):
@@ -662,19 +833,15 @@ async def resume_session(session_index: int = 0, extra_rounds: int = 4):
         console.print("[red]Couldn't find premise in session file.[/red]")
         return
 
-    # Find last round number
     last_round = 0
     for line in old_transcript.split("\n"):
         m = re.match(r'^── ROUND (\d+) ──', line)
         if m:
             last_round = int(m.group(1))
 
-    # Rebuild transcript as list
     transcript = old_transcript.split("\n")
 
-    # Remove old final result lines
     transcript = [l for l in transcript if not l.startswith("FINAL") and not l.startswith("====")]
-    # Remove old FINAL PITCH section
     pitch_idx = None
     for i, l in enumerate(transcript):
         if "FINAL PITCH:" in l:
@@ -709,7 +876,6 @@ async def resume_session(session_index: int = 0, extra_rounds: int = 4):
     transcript.append(f"FINAL RESULT: Resumed session ended at {verdict} (rounds {last_round + 1}-{new_last_round})")
     transcript.append(f"{'='*70}")
 
-    # Save as new file
     outfile = make_outfile(premise)
     outfile.write_text("\n".join(transcript))
 
@@ -776,7 +942,6 @@ if __name__ == "__main__":
         print(__doc__)
         sys.exit(0)
 
-    # --list
     if "--list" in sys.argv:
         sessions = get_sessions()
         if not sessions:
@@ -801,7 +966,6 @@ if __name__ == "__main__":
                 console.print()
         sys.exit(0)
 
-    # --ask
     if "--ask" in sys.argv:
         ask_idx = sys.argv.index("--ask")
         question = sys.argv[ask_idx + 1] if ask_idx + 1 < len(sys.argv) else None
@@ -812,7 +976,6 @@ if __name__ == "__main__":
         asyncio.run(ask_session(question, session_idx))
         sys.exit(0)
 
-    # --resume
     if "--resume" in sys.argv:
         session_idx = get_arg("--session", 0, int)
         extra = get_arg("--rounds", 4, int)
@@ -821,7 +984,6 @@ if __name__ == "__main__":
 
     use_scout = SCOUT_MODE
 
-    # --quick grabs the next arg as premise
     if QUICK_MODE:
         quick_idx = sys.argv.index("--quick")
         premise = sys.argv[quick_idx + 1] if quick_idx + 1 < len(sys.argv) and not sys.argv[quick_idx + 1].startswith("--") else None
@@ -831,7 +993,6 @@ if __name__ == "__main__":
         asyncio.run(spar(premise, use_scout=use_scout))
         sys.exit(0)
 
-    # Normal mode: premise as arg or interactive
     non_flag_args = [a for a in sys.argv[1:] if not a.startswith("--") and
                      (sys.argv.index(a) == 1 or not sys.argv[sys.argv.index(a) - 1].startswith("--"))]
 
