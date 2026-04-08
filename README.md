@@ -17,7 +17,7 @@ You throw in an idea (startup, career move, whatever). Two agents fight over it 
 
 Not just startups. Career decisions, side projects, life plans. Anything you want pressure-tested against real evidence instead of vibes.
 
-Works with OpenAI-compatible APIs via OpenRouter (requires `OPENROUTER_API_KEY`). Default model is `minimax/minimax-2.5-flash`.
+Works with OpenAI-compatible APIs via OpenRouter (requires `OPENROUTER_API_KEY`). Default model is `minimax/minimax-m2.5:free`.
 
 ## The agents
 
@@ -58,9 +58,9 @@ The judge has nine binary gates for its top verdict. A real person has to have e
 Python 3.10+.
 
 ```bash
-git clone https://github.com/sofianedjerbi/spar.git
+git clone https://github.com/cpilko/spar.git
 cd spar
-pip install openai-agents openai rich
+uv sync
 ```
 
 Authenticate with OpenRouter:
@@ -74,38 +74,38 @@ cp .env.example .env
 
 ```bash
 # throw in an idea
-python spar.py "your idea here"
+uv run spar.py "your idea here"
 
 # or paste a long prompt interactively
-python spar.py
+uv run spar.py
 
 # quick validation: 4 rounds, stops at STRONG
-python spar.py --quick "rebate tracker for distributors"
+uv run spar.py --quick "rebate tracker for distributors"
 
 # tweak the session
-python spar.py "idea" --rounds 20           # longer fight
-python spar.py "idea" --min-verdict strong  # stop at STRONG
-python spar.py "idea" --vc-rounds 4         # more VC rejection cycles
-python spar.py "idea" --name "rebate-v2"    # name the session file
+uv run spar.py "idea" --rounds 20           # longer fight
+uv run spar.py "idea" --min-verdict strong  # stop at STRONG
+uv run spar.py "idea" --vc-rounds 4         # more VC rejection cycles
+uv run spar.py "idea" --name "rebate-v2"    # name the session file
 ```
 
 ### After a session
 
 ```bash
 # list all past sessions
-python spar.py --list
+uv run spar.py --list
 
 # ask follow-up questions about the latest session
-python spar.py --ask "what could be improved?"
-python spar.py --ask "how would you monetize this differently?"
+uv run spar.py --ask "what could be improved?"
+uv run spar.py --ask "how would you monetize this differently?"
 
 # ask about an older session
-python spar.py --ask "compare this to the latest" --session 2
+uv run spar.py --ask "compare this to the latest" --session 2
 
 # continue a session that ended at STRONG (adds 4 more rounds)
-python spar.py --resume
-python spar.py --resume --rounds 8          # more rounds
-python spar.py --resume --session 2         # resume an older session
+uv run spar.py --resume
+uv run spar.py --resume --rounds 8          # more rounds
+uv run spar.py --resume --session 2         # resume an older session
 ```
 
 Transcripts save to `sparring_sessions/` with timestamps. Elapsed time shows at the end of each session.

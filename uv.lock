@@ -910,6 +910,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "openai" },
     { name = "openai-agents" },
+    { name = "python-dotenv" },
     { name = "rich" },
 ]
 
@@ -917,6 +918,7 @@ dependencies = [
 requires-dist = [
     { name = "openai", specifier = ">=1.0.0" },
     { name = "openai-agents", specifier = ">=0.13.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=14.3.3" },
 ]
 

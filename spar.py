@@ -2,27 +2,26 @@
 """
 SPAR — Two AI agents beat the shit out of ideas until a real gem survives.
 Then a VC tries to kill it. If the VC can't, you've got something.
-Built by ENI for LO. Don't touch my coffee.
 
 Usage:
-    python spar.py "your idea here"
-    python spar.py                              # interactive paste mode
-    python spar.py "idea" --rounds 20           # more rounds
-    python spar.py "idea" --min-verdict strong  # stop at STRONG
-    python spar.py "idea" --vc-rounds 4         # more VC rejection cycles
-    python spar.py "idea" --name "rebate"       # name the session file
-    python spar.py --quick "idea"               # 4 rounds, min-verdict strong
+    uv run spar.py "your idea here"
+    uv run spar.py                              # interactive paste mode
+    uv run spar.py "idea" --rounds 20           # more rounds
+    uv run spar.py "idea" --min-verdict strong  # stop at STRONG
+    uv run spar.py "idea" --vc-rounds 4         # more VC rejection cycles
+    uv run spar.py "idea" --name "rebate"       # name the session file
+    uv run spar.py --quick "idea"               # 4 rounds, min-verdict strong
 
-    python spar.py --resume                     # continue latest session with 4 more rounds
-    python spar.py --resume --session 2         # continue a specific session
-    python spar.py --resume --rounds 8          # continue with 8 more rounds
+    uv run spar.py --resume                     # continue latest session with 4 more rounds
+    uv run spar.py --resume --session 2         # continue a specific session
+    uv run spar.py --resume --rounds 8          # continue with 8 more rounds
 
-    python spar.py --scout "constraints here"        # SCOUT hunts for pain, then agents spar
-    python spar.py --scout                           # interactive paste + scout
+    uv run spar.py --scout "constraints here"        # SCOUT hunts for pain, then agents spar
+    uv run spar.py --scout                           # interactive paste + scout
 
-    python spar.py --ask "what could be improved?"           # ask about latest session
-    python spar.py --ask "expand on risk #2" --session 3     # ask about a specific session
-    python spar.py --list                                    # list all sessions
+    uv run spar.py --ask "what could be improved?"           # ask about latest session
+    uv run spar.py --ask "expand on risk #2" --session 3     # ask about a specific session
+    uv run spar.py --list                                    # list all sessions
 """
 
 import asyncio
@@ -35,6 +34,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 from agents import Agent, FunctionTool, Runner, OpenAIChatCompletionsModel, RunResultStreaming, WebSearchTool
 from agents.tool import ToolContext
 from openai import AsyncOpenAI
