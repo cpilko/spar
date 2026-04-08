@@ -44,23 +44,28 @@ from rich.panel import Panel
 
 console = Console(width=100)
 
-USE_OPENAI_SDK = os.environ.get("SPAR_SDK", "openai").lower() in ("openai", "oa")
-
 DIM = "\033[2m"
 MAGENTA = "\033[95m"
 RESET = "\033[0m"
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-DEFAULT_MODEL = "gpt-4o-2024-08-06"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "minimax/minimax-m2.5:free")
 MAX_TURNS = 40
 
-if USE_OPENAI_SDK and OPENAI_API_KEY:
-    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-    model = OpenAIChatCompletionsModel(model=DEFAULT_MODEL, openai_client=openai_client)
-else:
-    model = None
+required_env_vars = {
+    "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
+    "OPENROUTER_BASE_URL": OPENROUTER_BASE_URL,
+    "DEFAULT_MODEL": DEFAULT_MODEL,
+}
+missing = [k for k, v in required_env_vars.items() if not v]
+if missing:
+    print(f"Error: Missing required environment variables: {', '.join(missing)}")
+    print(f"Please copy .env.example to .env and fill in your API credentials.")
+    sys.exit(1)
+
+openai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+model = OpenAIChatCompletionsModel(model=DEFAULT_MODEL, openai_client=openai_client)
 
 
 def get_arg(flag, default=None, cast=str):
@@ -351,7 +356,7 @@ def get_or_create_agent(prompt_text: str, label: str) -> Agent:
 
 async def ask_agent(system_prompt: str, prompt: str, label: str, color: str) -> str:
     """Fire a query, stream tool usage live, collect final text."""
-    if not USE_OPENAI_SDK or not model:
+    if not model:
         return "(no response - SDK not configured)"
 
     try:

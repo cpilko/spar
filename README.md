@@ -17,7 +17,7 @@ You throw in an idea (startup, career move, whatever). Two agents fight over it 
 
 Not just startups. Career decisions, side projects, life plans. Anything you want pressure-tested against real evidence instead of vibes.
 
-Works with OpenAI models (requires `OPENAI_API_KEY`). All agents use extended reasoning models (e.g., `gpt-4o`).
+Works with OpenAI-compatible APIs via OpenRouter (requires `OPENROUTER_API_KEY`). Default model is `minimax/minimax-2.5-flash`.
 
 ## The agents
 
@@ -63,10 +63,11 @@ cd spar
 pip install openai-agents openai rich
 ```
 
-Authenticate with OpenAI:
+Authenticate with OpenRouter:
 
 ```bash
-export OPENAI_API_KEY="sk-..."
+cp .env.example .env
+# Edit .env and add your OPENROUTER_API_KEY
 ```
 
 ## Usage
