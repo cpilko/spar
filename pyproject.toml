@@ -7,4 +7,5 @@ dependencies = [
     "openai-agents>=0.13.0",
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
+    "exa-py>=1.0.0",
 ]

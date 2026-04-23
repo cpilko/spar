@@ -33,11 +33,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import httpx
 from dotenv import load_dotenv
-
-load_dotenv()
-from agents import Agent, FunctionTool, Runner, OpenAIChatCompletionsModel, RunResultStreaming, WebSearchTool
+from exa_py import Exa
+from agents import Agent, FunctionTool, Runner, OpenAIChatCompletionsModel, RunResultStreaming
+from agents.tracing import set_tracing_disabled
 from agents.tool import ToolContext
 from openai import AsyncOpenAI
 from rich.console import Console
@@ -45,20 +44,25 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 console = Console(width=100)
+set_tracing_disabled(True)
 
 DIM = "\033[2m"
 MAGENTA = "\033[95m"
 RESET = "\033[0m"
 
+load_dotenv()
+
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "minimax/minimax-m2.5:free")
+EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
 MAX_TURNS = 40
 
 required_env_vars = {
     "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
     "OPENROUTER_BASE_URL": OPENROUTER_BASE_URL,
     "DEFAULT_MODEL": DEFAULT_MODEL,
+    "EXA_API_KEY": EXA_API_KEY,
 }
 missing = [k for k, v in required_env_vars.items() if not v]
 if missing:
@@ -68,6 +72,7 @@ if missing:
 
 openai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
 model = OpenAIChatCompletionsModel(model=DEFAULT_MODEL, openai_client=openai_client)
+exa = Exa(api_key=EXA_API_KEY)
 
 
 def get_arg(flag, default=None, cast=str):
@@ -245,20 +250,22 @@ async def grep_files_tool(ctx: ToolContext, pattern: str, file_pattern: str = "*
         return f"Error grepping files: {e}"
 
 
-async def web_fetch_tool_impl(ctx: ToolContext, url: str) -> str:
-    """Fetch content from a URL."""
+async def web_fetch_tool_impl(ctx: ToolContext, query: str) -> str:
+    """Search the web using Exa and return formatted results."""
     try:
-        response = httpx.get(url, timeout=30.0, follow_redirects=True)
-        response.raise_for_status()
-        content = response.text
-        if len(content) > 50000:
-            content = content[:50000] + "\n[truncated]"
-        return content
+        results = exa.search(
+            query,
+            type="auto",
+            contents={"highlights": {"max_characters": 4000}}
+        )
+        formatted = "\n\n".join([
+            f"Title: {r.title}\nURL: {r.url}\nSummary: {r.highlights}"
+            for r in results.results
+        ])
+        return formatted if formatted else "No results found."
     except Exception as e:
-        return f"Error fetching URL: {e}"
+        return f"Error fetching: {e}"
 
-
-web_search_tool = WebSearchTool()
 
 read_file_function_tool = FunctionTool(
     name="Read",
@@ -313,18 +320,18 @@ grep_files_function_tool = FunctionTool(
     on_invoke_tool=grep_files_tool
 )
 
-web_fetch_function_tool = FunctionTool(
-    name="WebFetch",
-    description="Fetch the content of a webpage from a URL.",
+web_search_function_tool = FunctionTool(
+    name="WebSearch",
+    description="Search the web for current information, competitors, market data, and facts. Pass a search query.",
     params_json_schema={
         "type": "object",
         "properties": {
-            "url": {
+            "query": {
                 "type": "string",
-                "description": "The URL to fetch content from"
+                "description": "The search query"
             }
         },
-        "required": ["url"]
+        "required": ["query"]
     },
     on_invoke_tool=web_fetch_tool_impl
 )
@@ -337,8 +344,7 @@ def create_agent(instructions: str, label: str) -> Agent:
         instructions=instructions,
         model=model,
         tools=[
-            web_search_tool,
-            web_fetch_function_tool,
+            web_search_function_tool,
             read_file_function_tool,
             glob_files_function_tool,
             grep_files_function_tool,
@@ -361,47 +367,69 @@ async def ask_agent(system_prompt: str, prompt: str, label: str, color: str) -> 
     if not model:
         return "(no response - SDK not configured)"
 
+    console.print(f"[dim]→ {label}: sending request (prompt={len(prompt)} chars)...[/dim]")
     try:
         text_parts = []
 
+        agent = get_or_create_agent(system_prompt, label)
+        console.print(f"[dim]  Running {label} (max_turns={MAX_TURNS})...[/dim]")
+
         stream: RunResultStreaming = Runner.run_streamed(
-            get_or_create_agent(system_prompt, label),
+            agent,
             prompt,
             max_turns=MAX_TURNS,
         )
+        console.print(f"[dim]  Stream started, waiting for events...[/dim]")
 
-        async for event in stream.stream_events():
-            if hasattr(event, 'type'):
-                if event.type == "agent_output":
-                    if hasattr(event, 'raw_parsed'):
-                        for item in event.raw_parsed:
-                            if hasattr(item, 'type'):
-                                if item.type == "reasoning":
-                                    pass
-                                elif item.type == "tool_call":
-                                    tool_name = getattr(item, 'name', 'unknown')
-                                    tool_args = getattr(item, 'arguments', {})
-                                    if tool_name in ("WebSearch", "web_search"):
-                                        query = tool_args.get("query", "") if isinstance(tool_args, dict) else str(tool_args)
-                                        print(f"{DIM}{MAGENTA}    [{label} searching: {str(query)[:120]}]{RESET}")
-                                    elif tool_name in ("WebFetch", "web_fetch"):
-                                        url = tool_args.get("url", "") if isinstance(tool_args, dict) else str(tool_args)
-                                        print(f"{DIM}{MAGENTA}    [{label} fetching: {str(url)[:120]}]{RESET}")
-                                    elif tool_name in ("Read",):
-                                        path = tool_args.get("path", "") if isinstance(tool_args, dict) else str(tool_args)
-                                        print(f"{DIM}{MAGENTA}    [{label} reading: {str(path)[:120]}]{RESET}")
-                                    elif tool_name in ("Glob",):
-                                        pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
-                                        print(f"{DIM}{MAGENTA}    [{label} glob: {str(pattern)[:120]}]{RESET}")
-                                    elif tool_name in ("Grep",):
-                                        pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
-                                        print(f"{DIM}{MAGENTA}    [{label} grep: {str(pattern)[:120]}]{RESET}")
-                                    else:
-                                        print(f"{DIM}{MAGENTA}    [{label} using {tool_name}]{RESET}")
-                                elif item.type == "output_text":
-                                    if hasattr(item, 'text'):
-                                        text_parts.append(item.text)
+        TIMEOUT_SECONDS = 120
+        event_count = 0
+        last_event_time = time.time()
+        start_time = last_event_time
+        try:
+            async for event in stream.stream_events():
+                elapsed_total = time.time() - start_time
+                if elapsed_total > TIMEOUT_SECONDS:
+                    console.print(f"[dim]  Timeout after {TIMEOUT_SECONDS}s — cancelling stream[/dim]")
+                    return f"(error: timeout after {TIMEOUT_SECONDS}s)"
 
+                event_count += 1
+                if event_count == 1:
+                    elapsed = time.time() - last_event_time
+                    console.print(f"[dim]  First event after {elapsed:.1f}s (total: {elapsed_total:.1f}s)[/dim]")
+                elif event_count <= 3:
+                    console.print(f"[dim]  Event: {type(event).__name__}[/dim]")
+                if hasattr(event, 'type'):
+                    if event.type == "agent_output":
+                        if hasattr(event, 'raw_parsed'):
+                            for item in event.raw_parsed:
+                                if hasattr(item, 'type'):
+                                    if item.type == "reasoning":
+                                        pass
+                                    elif item.type == "tool_call":
+                                        tool_name = getattr(item, 'name', 'unknown')
+                                        tool_args = getattr(item, 'arguments', {})
+                                        if tool_name in ("WebSearch", "web_search"):
+                                            query = tool_args.get("query", "") if isinstance(tool_args, dict) else str(tool_args)
+                                            print(f"{DIM}{MAGENTA}    [{label} searching: {str(query)[:120]}]{RESET}")
+                                        elif tool_name in ("Read",):
+                                            path = tool_args.get("path", "") if isinstance(tool_args, dict) else str(tool_args)
+                                            print(f"{DIM}{MAGENTA}    [{label} reading: {str(path)[:120]}]{RESET}")
+                                        elif tool_name in ("Glob",):
+                                            pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
+                                            print(f"{DIM}{MAGENTA}    [{label} glob: {str(pattern)[:120]}]{RESET}")
+                                        elif tool_name in ("Grep",):
+                                            pattern = tool_args.get("pattern", "") if isinstance(tool_args, dict) else str(tool_args)
+                                            print(f"{DIM}{MAGENTA}    [{label} grep: {str(pattern)[:120]}]{RESET}")
+                                        else:
+                                            print(f"{DIM}{MAGENTA}    [{label} using {tool_name}]{RESET}")
+                                    elif item.type == "output_text":
+                                        if hasattr(item, 'text'):
+                                            text_parts.append(item.text)
+        except asyncio.TimeoutError:
+            console.print(f"[dim]  Timeout after {TIMEOUT_SECONDS}s — cancelling stream[/dim]")
+            return f"(error: timeout after {TIMEOUT_SECONDS}s)"
+
+        console.print(f"[dim]  Stream complete, getting final output...[/dim]")
         final_result = stream.final_output_as(str)
         return final_result.strip() if final_result else "(no response)"
 
@@ -420,6 +448,7 @@ async def run_sparring(premise: str, transcript: list, start_round: int,
     vc_injection_done = False
 
     for round_num in range(start_round, start_round + num_rounds):
+        console.print(f"[dim]─── Starting round {round_num} ───[/dim]")
         if use_scout and round_num > 1 and (round_num - 1) % 3 == 0:
             scout_premise = original_premise or premise
             convo_summary = "\n\n".join(transcript[-20:])
@@ -675,6 +704,7 @@ async def run_scout(premise: str, transcript: list) -> str:
 # ─── MAIN LOOP ────────────────────────────────────────────────────────────────
 
 async def spar(premise: str, use_scout: bool = False):
+    console.print(f"[dim]SPAR: Initializing with premise: {premise[:50]}...[/dim]")
     start_time = time.time()
     outfile = make_outfile(premise)
 
